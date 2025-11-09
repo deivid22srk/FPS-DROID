@@ -1,7 +1,7 @@
 package com.fpsdroid.monitor.ui.components
 
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -13,38 +13,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fpsdroid.monitor.core.PerformanceStats
+import kotlin.math.roundToInt
 
 @Composable
 fun OverlayContent(
     stats: PerformanceStats,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onPositionChange: (IntOffset) -> Unit = {}
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 0.7f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
 
     Surface(
         modifier = Modifier
-            .shadow(16.dp, RoundedCornerShape(20.dp))
-            .clip(RoundedCornerShape(20.dp)),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-        tonalElevation = 8.dp
+            .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    offsetX += dragAmount.x
+                    offsetY += dragAmount.y
+                    onPositionChange(IntOffset(offsetX.roundToInt(), offsetY.roundToInt()))
+                }
+            }
+            .shadow(8.dp, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp)),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        tonalElevation = 4.dp
     ) {
         Column(
-            modifier = Modifier
-                .padding(16.dp)
-                .width(IntrinsicSize.Max)
+            modifier = Modifier.padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -52,39 +56,37 @@ fun OverlayContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "FPS DROID",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = "FPS",
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
                 )
                 
                 IconButton(
                     onClick = onClose,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(16.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(18.dp)
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.size(12.dp)
                     )
                 }
             }
             
-            Spacer(modifier = Modifier.height(12.dp))
-            
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(
                         when {
-                            stats.fps >= 60 -> Color(0xFF4CAF50).copy(alpha = 0.2f)
-                            stats.fps >= 30 -> Color(0xFFFF9800).copy(alpha = 0.2f)
-                            else -> Color(0xFFF44336).copy(alpha = 0.2f)
+                            stats.fps >= 60 -> Color(0xFF4CAF50).copy(alpha = 0.15f)
+                            stats.fps >= 30 -> Color(0xFFFF9800).copy(alpha = 0.15f)
+                            else -> Color(0xFFF44336).copy(alpha = 0.15f)
                         }
                     )
-                    .padding(12.dp),
+                    .padding(6.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Row(
@@ -93,7 +95,7 @@ fun OverlayContent(
                 ) {
                     Text(
                         text = "${stats.fps}",
-                        fontSize = 48.sp,
+                        fontSize = 28.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = when {
                             stats.fps >= 60 -> Color(0xFF4CAF50)
@@ -101,32 +103,23 @@ fun OverlayContent(
                             else -> Color(0xFFF44336)
                         }
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "FPS",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
                 }
             }
             
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             
-            PerformanceRow(
-                label = "CPU",
-                value = "${String.format("%.1f", stats.cpuUsage)}%",
-                progress = stats.cpuUsage / 100f,
-                color = MaterialTheme.colorScheme.primary
-            )
+            CompactStat("CPU", "${String.format("%.0f", stats.cpuUsage)}%")
+            
+            if (stats.gpuUsage > 0) {
+                Spacer(modifier = Modifier.height(3.dp))
+                CompactStat("GPU", "${String.format("%.0f", stats.gpuUsage)}%")
+            }
             
             if (stats.cpuTemp > 0) {
-                Spacer(modifier = Modifier.height(8.dp))
-                PerformanceRow(
-                    label = "Temp",
-                    value = "${String.format("%.0f", stats.cpuTemp)}°C",
-                    progress = (stats.cpuTemp / 100f).coerceIn(0f, 1f),
+                Spacer(modifier = Modifier.height(3.dp))
+                CompactStat(
+                    "TEMP", 
+                    "${String.format("%.0f", stats.cpuTemp)}°C",
                     color = when {
                         stats.cpuTemp < 60 -> Color(0xFF4CAF50)
                         stats.cpuTemp < 80 -> Color(0xFFFF9800)
@@ -134,69 +127,32 @@ fun OverlayContent(
                     }
                 )
             }
-            
-            if (stats.gpuUsage > 0 || stats.gpuFreq > 0) {
-                Spacer(modifier = Modifier.height(8.dp))
-                PerformanceRow(
-                    label = "GPU",
-                    value = if (stats.gpuUsage > 0) "${String.format("%.1f", stats.gpuUsage)}%" 
-                           else "${stats.gpuFreq} MHz",
-                    progress = if (stats.gpuUsage > 0) stats.gpuUsage / 100f 
-                              else (stats.gpuFreq / 1000f).coerceIn(0f, 1f),
-                    color = MaterialTheme.colorScheme.tertiary
-                )
-            }
-            
-            if (stats.ramTotal > 0) {
-                Spacer(modifier = Modifier.height(8.dp))
-                PerformanceRow(
-                    label = "RAM",
-                    value = "${stats.ramUsed} / ${stats.ramTotal} MB",
-                    progress = stats.ramUsed.toFloat() / stats.ramTotal.toFloat(),
-                    color = MaterialTheme.colorScheme.secondary
-                )
-            }
         }
     }
 }
 
 @Composable
-fun PerformanceRow(
+fun CompactStat(
     label: String,
     value: String,
-    progress: Float,
-    color: Color
+    color: Color = MaterialTheme.colorScheme.onSurface
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.labelLarge,
-                color = color,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        
-        Spacer(modifier = Modifier.height(4.dp))
-        
-        LinearProgressIndicator(
-            progress = { progress.coerceIn(0f, 1f) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp)),
-            color = color,
-            trackColor = color.copy(alpha = 0.2f),
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontSize = 9.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            text = value,
+            fontSize = 10.sp,
+            color = color.copy(alpha = 0.9f),
+            fontWeight = FontWeight.Bold
         )
     }
 }

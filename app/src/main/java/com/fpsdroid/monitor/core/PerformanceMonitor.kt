@@ -1,12 +1,12 @@
 package com.fpsdroid.monitor.core
 
 import android.util.Log
+import android.view.Choreographer
 import com.fpsdroid.monitor.util.RootUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.io.File
 
 data class PerformanceStats(
     val fps: Int = 0,
@@ -25,15 +25,37 @@ class PerformanceMonitor {
     private val _stats = MutableStateFlow(PerformanceStats())
     val stats: StateFlow<PerformanceStats> = _stats.asStateFlow()
     
-    private var lastFrameCount = 0L
-    private var lastFrameTime = 0L
+    private var frameCount = 0
+    private var lastFpsTime = System.currentTimeMillis()
+    private var currentFps = 0
     
     private val TAG = "PerformanceMonitor"
+
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            frameCount++
+            val currentTime = System.currentTimeMillis()
+            val timeDiff = currentTime - lastFpsTime
+            
+            if (timeDiff >= 1000) {
+                currentFps = ((frameCount * 1000f) / timeDiff).toInt()
+                frameCount = 0
+                lastFpsTime = currentTime
+            }
+            
+            if (monitoringJob?.isActive == true) {
+                Choreographer.getInstance().postFrameCallback(this)
+            }
+        }
+    }
 
     fun startMonitoring() {
         if (monitoringJob?.isActive == true) return
         
         Log.d(TAG, "Starting performance monitoring")
+        
+        Choreographer.getInstance().postFrameCallback(frameCallback)
+        
         monitoringJob = scope.launch {
             while (isActive) {
                 try {
@@ -57,7 +79,7 @@ class PerformanceMonitor {
                     Log.e(TAG, "Error measuring performance", e)
                 }
                 
-                delay(500)
+                delay(1000)
             }
         }
     }
@@ -66,59 +88,54 @@ class PerformanceMonitor {
         Log.d(TAG, "Stopping performance monitoring")
         monitoringJob?.cancel()
         monitoringJob = null
+        frameCount = 0
+        currentFps = 0
     }
 
     private suspend fun measureFps(): Int = withContext(Dispatchers.IO) {
         try {
-            val surfaceFlingerDump = RootUtils.executeRootCommand(
-                "dumpsys SurfaceFlinger --latency"
+            if (currentFps > 0) {
+                return@withContext currentFps.coerceIn(0, 240)
+            }
+
+            val refreshRate = try {
+                val output = RootUtils.executeRootCommand(
+                    "dumpsys display | grep 'mRefreshRate'"
+                )
+                output?.let {
+                    val match = Regex("(\\d+\\.\\d+)").find(it)
+                    match?.value?.toFloatOrNull()?.toInt() ?: 60
+                } ?: 60
+            } catch (e: Exception) {
+                60
+            }
+
+            val gfxInfoOutput = RootUtils.executeRootCommand(
+                "dumpsys gfxinfo | grep -A 1 'Total frames rendered'"
             )
             
-            if (surfaceFlingerDump != null) {
-                val lines = surfaceFlingerDump.split("\n").filter { it.isNotBlank() }
-                if (lines.size > 2) {
-                    val frames = lines.drop(1).mapNotNull { line ->
-                        val parts = line.split("\t")
-                        if (parts.size >= 3) parts[0].toLongOrNull() else null
-                    }
-                    
-                    if (frames.size >= 2) {
-                        val timeSpan = (frames.last() - frames.first()) / 1_000_000_000.0
-                        if (timeSpan > 0) {
-                            val fps = (frames.size / timeSpan).toInt()
-                            return@withContext fps.coerceIn(0, 240)
+            if (gfxInfoOutput != null && gfxInfoOutput.isNotBlank()) {
+                val lines = gfxInfoOutput.trim().split("\n")
+                for (line in lines) {
+                    val frameMatch = Regex("(\\d+)").find(line)
+                    if (frameMatch != null) {
+                        val fps = frameMatch.value.toIntOrNull()
+                        if (fps != null && fps in 1..240) {
+                            return@withContext fps
                         }
                     }
                 }
             }
-            
-            val gfxInfoOutput = RootUtils.executeRootCommand(
-                "dumpsys gfxinfo | grep 'Total frames rendered' -A 1"
+
+            val sfOutput = RootUtils.executeRootCommand(
+                "dumpsys SurfaceFlinger --list"
             )
             
-            if (gfxInfoOutput != null) {
-                val frameMatch = Regex("(\\d+)").find(gfxInfoOutput)
-                if (frameMatch != null) {
-                    val currentFrameCount = frameMatch.value.toLong()
-                    val currentTime = System.currentTimeMillis()
-                    
-                    if (lastFrameTime > 0) {
-                        val timeDiff = (currentTime - lastFrameTime) / 1000.0
-                        val frameDiff = currentFrameCount - lastFrameCount
-                        val fps = (frameDiff / timeDiff).toInt()
-                        
-                        lastFrameCount = currentFrameCount
-                        lastFrameTime = currentTime
-                        
-                        return@withContext fps.coerceIn(0, 240)
-                    }
-                    
-                    lastFrameCount = currentFrameCount
-                    lastFrameTime = currentTime
-                }
+            if (sfOutput != null && sfOutput.contains("SurfaceView")) {
+                return@withContext refreshRate
             }
-            
-            60
+
+            refreshRate.coerceIn(0, 240)
         } catch (e: Exception) {
             Log.e(TAG, "FPS measurement failed", e)
             60
@@ -171,13 +188,17 @@ class PerformanceMonitor {
             val thermalZones = listOf(
                 "/sys/class/thermal/thermal_zone0/temp",
                 "/sys/class/thermal/thermal_zone1/temp",
+                "/sys/class/thermal/thermal_zone2/temp",
                 "/sys/devices/virtual/thermal/thermal_zone0/temp"
             )
             
             for (zone in thermalZones) {
                 val temp = RootUtils.readFile(zone)
-                temp?.toFloatOrNull()?.let {
-                    return@withContext (it / 1000f).coerceIn(0f, 150f)
+                temp?.trim()?.toFloatOrNull()?.let {
+                    val celsius = if (it > 1000) it / 1000f else it
+                    if (celsius in 0f..150f) {
+                        return@withContext celsius
+                    }
                 }
             }
             
@@ -194,23 +215,28 @@ class PerformanceMonitor {
                 "/sys/class/kgsl/kgsl-3d0/gpubusy",
                 "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
                 "/sys/devices/platform/mali.0/utilization",
-                "/sys/devices/platform/soc/soc:qcom,kgsl-3d0/kgsl/kgsl-3d0/gpubusy"
+                "/sys/devices/platform/soc/soc:qcom,kgsl-3d0/kgsl/kgsl-3d0/gpubusy",
+                "/sys/kernel/gpu/gpu_busy"
             )
             
             for (path in gpuLoadPaths) {
                 val content = RootUtils.readFile(path)
-                if (content != null) {
-                    val parts = content.split(" ")
+                if (content != null && content.isNotBlank()) {
+                    val parts = content.trim().split(" ")
                     if (parts.size >= 2) {
                         val busy = parts[0].toLongOrNull() ?: continue
                         val total = parts[1].toLongOrNull() ?: continue
                         if (total > 0) {
                             val usage = (busy.toFloat() / total) * 100
-                            return@withContext usage.coerceIn(0f, 100f)
+                            if (usage in 0f..100f) {
+                                return@withContext usage
+                            }
                         }
                     } else {
-                        content.toFloatOrNull()?.let {
-                            return@withContext it.coerceIn(0f, 100f)
+                        content.trim().toFloatOrNull()?.let {
+                            if (it in 0f..100f) {
+                                return@withContext it
+                            }
                         }
                     }
                 }
@@ -228,14 +254,17 @@ class PerformanceMonitor {
             val freqPaths = listOf(
                 "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq",
                 "/sys/class/kgsl/kgsl-3d0/clock_mhz",
-                "/sys/devices/platform/mali.0/clock"
+                "/sys/devices/platform/mali.0/clock",
+                "/sys/kernel/gpu/gpu_clock"
             )
             
             for (path in freqPaths) {
                 val freq = RootUtils.readFile(path)
-                freq?.toLongOrNull()?.let {
+                freq?.trim()?.toLongOrNull()?.let {
                     val mhz = if (it > 1_000_000) (it / 1_000_000).toInt() else it.toInt()
-                    return@withContext mhz.coerceIn(0, 5000)
+                    if (mhz in 1..5000) {
+                        return@withContext mhz
+                    }
                 }
             }
             
@@ -265,10 +294,11 @@ class PerformanceMonitor {
                     }
                 }
                 
-                val memUsed = (memTotal - memAvailable) / 1024
-                val memTotalMB = memTotal / 1024
-                
-                return@withContext Pair(memUsed, memTotalMB)
+                if (memTotal > 0) {
+                    val memUsed = (memTotal - memAvailable) / 1024
+                    val memTotalMB = memTotal / 1024
+                    return@withContext Pair(memUsed, memTotalMB)
+                }
             }
             
             Pair(0, 0)
