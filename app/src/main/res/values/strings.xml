@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FPS DROID</string>
+    <string name="overlay_notification_channel">Overlay Monitor</string>
+    <string name="overlay_notification_title">FPS Monitor Active</string>
+    <string name="overlay_notification_text">Monitoring performance…</string>
+</resources>
